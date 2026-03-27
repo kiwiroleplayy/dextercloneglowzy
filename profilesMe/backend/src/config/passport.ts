@@ -1,6 +1,6 @@
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
-import { User } from '../model/profiles'; // Import the Mongoose model
+import { supabase } from './database';
 
 passport.use(
   new GoogleStrategy(
@@ -11,23 +11,31 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        // Check if user exists in MongoDB
-        const existingUser = await User.findOne({ googleId: profile.id });
+        // Check if user exists in Supabase
+        const { data: existingUser } = await supabase
+          .from('users')
+          .select('*')
+          .eq('google_id', profile.id)
+          .single();
 
         if (existingUser) {
           return done(null, existingUser);
         }
 
         // If user does not exist, create a new user
-        const newUser = new User({
-          googleId: profile.id,
-          email: profile.emails![0].value,
-          name: profile.displayName,
-        });
-        console.log('1')
-        const savedUser = await newUser.save();
-        console.log(2)
-        return done(null, savedUser);
+        const { data: newUser } = await supabase
+          .from('users')
+          .insert({
+            google_id: profile.id,
+            email: profile.emails![0].value,
+            name: profile.displayName,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+
+        return done(null, newUser);
       } catch (error) {
         return done(error as Error);
       }
@@ -41,7 +49,11 @@ passport.serializeUser((user: any, done) => {
 
 passport.deserializeUser(async (id: string, done) => {
   try {
-    const user = await User.findById(id);
+    const { data: user } = await supabase
+      .from('users')
+      .select('*')
+      .eq('google_id', id)
+      .single();
     done(null, user || null);
   } catch (error) {
     done(error, null);
