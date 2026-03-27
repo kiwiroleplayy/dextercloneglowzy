@@ -42,7 +42,16 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 app.get('/' , (req,res)=> {
   res.json({status: 'ok'})
 })
-app.listen(3000, () => {
+
+const port = process.env.PORT || 3000;
+
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(port, () => {
+    mongoDB()
+    console.log(`Server is running on port ${port}`);
+  });
+} else {
   mongoDB()
-  console.log(`Server is running `);
-});
+}
+
+export default app;

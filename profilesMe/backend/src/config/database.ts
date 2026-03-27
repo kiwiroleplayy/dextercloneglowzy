@@ -1,17 +1,11 @@
-import mongoose from 'mongoose';
-import mysql from 'mysql2/promise';
+import { createClient } from '@supabase/supabase-js';
 
+const supabaseUrl = process.env.SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-export const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'link_platform',
-  waitForConnections: true,
-  connectionLimit: 10,
-});
-
+export const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 export const mongoDB = () => {
-  mongoose.connect(process.env.MONGO , {dbName: 'link_platform'}).then(() => {console.log('MonogDB connected')})
-}
+  // MongoDB removed - using Supabase instead
+  console.log('Supabase client initialized');
+};

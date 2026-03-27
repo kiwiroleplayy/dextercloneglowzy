@@ -290,43 +290,57 @@
 
 
 import { NextFunction, Request, Response } from 'express';
-import { User } from '../model/profiles'; // Assuming you have a User model
-import { Link } from '../model/link'; // Assuming you have a Link model
-import mongoose from 'mongoose';
+import { supabase } from '../config/database';
 
-export const createUser = async (req: Request, res: Response, next: NextFunction) : Promise<void> => {
+export const createUser = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { username, name, description } = req.body;
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
 
     // Check if username already exists
-    const existingUser = await User.findOne({ username });
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .single();
+
     if (existingUser) {
-       res.status(400).json({ message: 'Username already taken' });
-       return
+      res.status(400).json({ message: 'Username already taken' });
+      return;
     }
 
     // Handle file uploads
-    const profilePicture = files.profilePicture ? files.profilePicture[0].buffer : undefined;
-    const backgroundMedia = files.backgroundMedia ? files.backgroundMedia[0].buffer : undefined;
+    const profilePicture = files.profilePicture ? files.profilePicture[0].buffer : null;
+    const backgroundMedia = files.backgroundMedia ? files.backgroundMedia[0].buffer : null;
     const backgroundType = files.backgroundMedia
       ? (files.backgroundMedia[0].mimetype.startsWith('video') ? 'video' : 'image')
-      : undefined;
+      : null;
 
     // Create new user
-    const newUser = new User({
-      username,
-      name,
-      description,
-      profilePicture,
-      backgroundMedia,
-      backgroundType
-    });
+    const { data: newUser, error } = await supabase
+      .from('users')
+      .insert({
+        username,
+        name,
+        description,
+        profile_picture: profilePicture,
+        background_media: backgroundMedia,
+        background_type: backgroundType,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
 
-    await newUser.save();
+    if (error) {
+      console.error('Supabase error:', error);
+      res.status(500).json({ message: 'Failed to create user', error: error.message });
+      return;
+    }
 
     res.status(201).json({ message: 'User created successfully', user: newUser });
   } catch (error) {
+    console.error('Error in createUser:', error);
     next(error);
   }
 };
@@ -335,35 +349,46 @@ export const getUserByUsername = async (req: Request, res: Response, next: NextF
   try {
     const { username } = req.params;
 
-    // Find user and increment total visit
-    const user = await User.findOneAndUpdate(
-      { username },
-      { $inc: { totalVisit: 1 } },
-      { new: true }
-    );
+    // Find user
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .single();
 
-    if (!user) {
-       res.status(404).json({ message: 'User not found' });
-       return
+    if (userError || !user) {
+      res.status(404).json({ message: 'User not found' });
+      return;
     }
 
+    // Increment total visit
+    await supabase
+      .from('users')
+      .update({ total_visit: user.total_visit + 1 })
+      .eq('id', user.id);
+
     // Find links for the user
-    const links = await Link.find({ userId: user._id }).sort({ order: 1 });
+    const { data: links } = await supabase
+      .from('links')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('order', { ascending: true });
 
     // Prepare user profile response
     const userProfile = {
-      ...user.toObject(),
-      profilePicture: user.profilePicture
-        ? `data:image/jpeg;base64,${user.profilePicture.toString('base64')}`
+      ...user,
+      profile_picture: user.profile_picture
+        ? `data:image/jpeg;base64,${Buffer.from(user.profile_picture).toString('base64')}`
         : null,
-      backgroundMedia: user.backgroundMedia
-        ? `data:image/${user.backgroundType || 'jpeg'};base64,${user.backgroundMedia.toString('base64')}`
+      background_media: user.background_media
+        ? `data:image/${user.background_type || 'jpeg'};base64,${Buffer.from(user.background_media).toString('base64')}`
         : null,
-      links
+      links: links || []
     };
 
     res.json(userProfile);
   } catch (error) {
+    console.error('Error in getUserByUsername:', error);
     next(error);
   }
 };
@@ -375,53 +400,93 @@ export const updateUser = async (req: Request, res: Response, next: NextFunction
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
 
     // Find user
-    const user = await User.findOne({ username });
-    if (!user) {
-       res.status(404).json({ message: 'User not found' });
-       return
+    const { data: user, error: findError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .single();
+
+    if (findError || !user) {
+      res.status(404).json({ message: 'User not found' });
+      return;
     }
 
-    // Update basic user info
-    user.name = name;
-    user.description = description;
+    // Prepare update data
+    const updateData: any = {
+      name,
+      description,
+      updated_at: new Date().toISOString()
+    };
 
     // Handle profile picture
     if (files.profilePicture) {
-      user.profilePicture = files.profilePicture[0].buffer;
+      updateData.profile_picture = files.profilePicture[0].buffer;
     }
 
     // Handle background media
     if (files.backgroundMedia) {
-      user.backgroundMedia = files.backgroundMedia[0].buffer;
-      user.backgroundType = files.backgroundMedia[0].mimetype.startsWith('video') ? 'video' : 'image';
+      updateData.background_media = files.backgroundMedia[0].buffer;
+      updateData.background_type = files.backgroundMedia[0].mimetype.startsWith('video') ? 'video' : 'image';
     }
 
-    await user.save();
+    // Update user
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update(updateData)
+      .eq('id', user.id)
+      .select()
+      .single();
 
-    res.json({ message: 'User updated successfully', user });
+    if (updateError) {
+      console.error('Supabase update error:', updateError);
+      res.status(500).json({ message: 'Failed to update user', error: updateError.message });
+      return;
+    }
+
+    res.json({ message: 'User updated successfully', user: updatedUser });
   } catch (error) {
-    console.error('Error updating user:', error);
+    console.error('Error in updateUser:', error);
     next(error);
   }
 };
 
-export const deleteUser = async (req: Request, res: Response, next: NextFunction) : Promise<void> => {
+export const deleteUser = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { username } = req.params;
 
-    // Delete user and associated links
-    const deletedUser = await User.findOneAndDelete({ username });
+    // Find user first
+    const { data: user, error: findError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .single();
 
-    if (!deletedUser) {
-       res.status(404).json({ message: 'User not found' });
-       return
+    if (findError || !user) {
+      res.status(404).json({ message: 'User not found' });
+      return;
     }
 
-    // Optional: Delete all links associated with the user
-    await Link.deleteMany({ userId: deletedUser._id });
+    // Delete user and associated links
+    const { error: deleteError } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', user.id);
+
+    if (deleteError) {
+      console.error('Supabase delete error:', deleteError);
+      res.status(500).json({ message: 'Failed to delete user', error: deleteError.message });
+      return;
+    }
+
+    // Delete all links associated with the user
+    await supabase
+      .from('links')
+      .delete()
+      .eq('user_id', user.id);
 
     res.json({ message: 'User deleted successfully' });
   } catch (error) {
+    console.error('Error in deleteUser:', error);
     next(error);
   }
 };
@@ -431,7 +496,7 @@ export const deleteUser = async (req: Request, res: Response, next: NextFunction
 export const setUsername = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { username } = req.body;
-    const userId = (req.user as any).id; // Assuming `id` is populated in the `req.user` middleware
+    const userId = (req.user as any).id;
 
     // Validation
     if (!username || typeof userId === "undefined") {
@@ -458,10 +523,12 @@ export const setUsername = async (req: Request, res: Response, next: NextFunctio
     }
 
     // Check if username exists for another user
-    const existingUser = await User.findOne({
-      username,
-      id: { $ne: userId }, // Ensure the same `username` is not already used by another user
-    });
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .neq('id', userId)
+      .single();
 
     if (existingUser) {
       res.status(200).json({ exists: true });
@@ -469,13 +536,14 @@ export const setUsername = async (req: Request, res: Response, next: NextFunctio
     }
 
     // Update username
-    const updatedUser = await User.findOneAndUpdate(
-      { id: userId }, // Match using `id` (auto-incremented number)
-      { username },
-      { new: true }
-    );
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update({ username, updated_at: new Date().toISOString() })
+      .eq('id', userId)
+      .select()
+      .single();
 
-    if (!updatedUser) {
+    if (updateError || !updatedUser) {
       res.status(500).json({ message: "Failed to update username" });
       return;
     }

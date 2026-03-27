@@ -1,10 +1,9 @@
 import { Router } from 'express';
 import passport from 'passport';
 import jwt, { JwtPayload } from 'jsonwebtoken';
-import { pool } from '../config/database';
+import { supabase } from '../config/database';
 import { isAuthenticated } from '../middleware/auth';
 import {  User as UserType} from '../types/types';
-import { User } from '../model/profiles';
 
 const router = Router();
 
@@ -14,97 +13,72 @@ router.get('/google',
 
 router.get('/google/callback',
   passport.authenticate('google', { session: false }),
-  (req, res) => {
-    // console.log(req.user)
-    const token = jwt.sign(
-      { id: (req.user as UserType).id, email: (req.user as UserType).email , username: (req.user as UserType).username },
-      process.env.JWT_SECRET!,
-      { expiresIn: '7d' }
-    );
+  async (req, res) => {
+    try {
+      const user = req.user as UserType;
+      
+      // Check if user exists in Supabase, if not create them
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('id')
+        .eq('google_id', user.id)
+        .single();
 
-    res.redirect(`${process.env.FRONTEND_URL}/oauth-callback?token=${token}`);
+      if (!existingUser) {
+        // Create new user in Supabase
+        await supabase
+          .from('users')
+          .insert({
+            google_id: user.id,
+            email: user.email,
+            name: user.name,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+      }
+
+      const token = jwt.sign(
+        { id: user.id, email: user.email, username: user.username },
+        process.env.JWT_SECRET!,
+        { expiresIn: '7d' }
+      );
+
+      res.redirect(`${process.env.FRONTEND_URL}/oauth-callback?token=${token}`);
+    } catch (error) {
+      console.error('Error in Google callback:', error);
+      res.redirect(`${process.env.FRONTEND_URL}/login?error=auth_failed`);
+    }
   }
 );
 
 router.get('/me', isAuthenticated, async (req, res, next) => {
   try {
-
-
     const id = (req.user as any).id;
-    // console.log( 'username' , id)
 
-    const user = await User.findOne({id: id});
+    // Find user by Google ID
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('google_id', id)
+      .single();
 
-    if(!user){
-      res.status(400).json({message: 'User not found'})
-      return
+    if (error || !user) {
+      res.status(400).json({ message: 'User not found' });
+      return;
     }
-
-    console.log('3');
-
-    let profilePicture = null;
-    if (user && user.profilePicture) {
-      profilePicture = `data:image/jpeg;base64,${Buffer.from(user.profilePicture).toString('base64')}`;
-    }
-
-
-
-
-    // console.log('4' ,user);
-
-    // const responseData = {
-    //   name: user.name,
-    //   email: user.email,
-    //   googleId: user.googleId,
-    //   totalVisit: user.totalVisit,
-    //   profileImage: profilePicture,
-    // };
-
-
-    console.log('1');
-    // const [rows] = await pool.execute(
-    //   'SELECT id, username, name, email, totalVisit, description FROM users WHERE id = ?',
-    //   [(req.user as any).id]
-    // );
-
-    // console.log('2');
-    // if (!Array.isArray(rows) || rows.length === 0) {
-    //   res.status(404).json({ message: 'User not found' });
-    //   return;
-    // }
-
-    // const username = (req.user as any).username;
-
-    // const media = await User.findOne({ username: username });
-    // console.log('3');
-
-    // let profilePicture = null;
-    // if (media && media.profileImage) {
-    //   profilePicture = `data:image/jpeg;base64,${Buffer.from(media.profileImage).toString('base64')}`;
-    // }
-
-    // console.log('4' ,{ ...rows[0], profilePicture});
-
-    // const responseData = {
-    //   ...rows[0],
-    //   profileImage: profilePicture,
-    // };
 
     const response = {
-      ...user.toObject(),
-      profilePicture: user.profilePicture ?
-       `data:image/jpeg;base64,${Buffer.from(user.profilePicture).toString('base64')}`
-       : null,
+      ...user,
+      profile_picture: user.profile_picture
+        ? `data:image/jpeg;base64,${Buffer.from(user.profile_picture).toString('base64')}`
+        : null,
+    };
 
-    }
-// console.log(response)
     res.json(response);
   } catch (error) {
     console.error('Error fetching user data:', error);
     next(error);
   }
 });
-
-
 
 export default router;
